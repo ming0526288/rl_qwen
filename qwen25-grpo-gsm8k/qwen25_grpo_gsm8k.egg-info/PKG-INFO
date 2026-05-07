@@ -1,3 +1,29 @@
+Metadata-Version: 2.4
+Name: qwen25-grpo-gsm8k
+Version: 0.1.0
+Summary: Lightweight GRPO post-training and evaluation pipeline for Qwen2.5-1.5B-Instruct on GSM8K.
+Requires-Python: <3.13,>=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: torch
+Requires-Dist: transformers
+Requires-Dist: datasets
+Requires-Dist: accelerate
+Requires-Dist: peft
+Requires-Dist: trl
+Requires-Dist: safetensors
+Requires-Dist: sentencepiece
+Requires-Dist: protobuf
+Requires-Dist: swanlab
+Requires-Dist: wandb
+Requires-Dist: pyyaml
+Requires-Dist: tqdm
+Requires-Dist: numpy
+Requires-Dist: pandas
+Requires-Dist: huggingface_hub
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: ruff; extra == "dev"
+
 # qwen25-grpo-gsm8k
 
 一个完整、可运行、可上传 GitHub 的轻量复现项目，用于在 `Qwen/Qwen2.5-1.5B-Instruct` 上进行 `GRPO` 数学推理后训练，并在 `GSM8K` 上比较训练前后的表现。
@@ -152,75 +178,45 @@ reward = answer_reward + format_reward + length_penalty
 - 建议使用支持 CUDA 的 PyTorch
 - `trl` 需要包含 `GRPOTrainer`
 
-推荐使用 `uv`：
+安装依赖：
 
 ```bash
 uv sync
 ```
 
-也支持：
+或：
 
 ```bash
 pip install -e .
 ```
 
-## uv 使用说明
-
-本项目默认推荐 `uv` 工作流。
-
-为避免出现“当前激活虚拟环境”和“项目 `.venv`”不一致导致的依赖混用问题，项目中的 shell 脚本已经统一改成通过 `uv run --active python ...` 调用 Python 主程序。
-
-这意味着你可以继续使用：
-
-```bash
-bash scripts/train_grpo.sh
-```
-
-但脚本内部实际会走：
-
-```bash
-uv run --active python -m src.train.train_grpo ...
-```
-
-如果你更喜欢直接运行主程序，也可以手动执行：
-
-```bash
-uv run --active python -m src.train.train_grpo --config configs/grpo_qwen25_1_5b.yaml
-```
-
 ## 运行命令
 
-1. 安装依赖
+1. 下载模型
 
 ```bash
-uv sync
+python scripts/download_model.py --config configs/grpo_qwen25_1_5b.yaml
 ```
 
-2. 下载模型
+2. 下载并处理数据集
 
 ```bash
-uv run --active python scripts/download_model.py --config configs/grpo_qwen25_1_5b.yaml
+python scripts/download_dataset.py --config configs/grpo_qwen25_1_5b.yaml
 ```
 
-3. 下载并处理数据集
-
-```bash
-uv run --active python scripts/download_dataset.py --config configs/grpo_qwen25_1_5b.yaml
-```
-
-4. 训练 GRPO
+3. 训练 GRPO
 
 ```bash
 bash scripts/train_grpo.sh
 ```
 
-5. 评测 baseline
+4. 评测 baseline
 
 ```bash
 bash scripts/eval_acc1.sh baseline
 ```
 
-6. 评测 GRPO
+5. 评测 GRPO
 
 ```bash
 bash scripts/eval_acc1.sh grpo
@@ -232,17 +228,17 @@ bash scripts/eval_acc1.sh grpo
 bash scripts/eval_acc1.sh grpo configs/grpo_qwen25_1_5b.yaml ./outputs/qwen25_1_5b_grpo_gsm8k/checkpoint-1000
 ```
 
-7. 计算 Pass@K / Maj@K
+6. 计算 Pass@K / Maj@K
 
 ```bash
 bash scripts/eval_passk_majk.sh baseline
 bash scripts/eval_passk_majk.sh grpo
 ```
 
-8. 汇总结果
+7. 汇总结果
 
 ```bash
-uv run --active python src/eval/summarize_results.py --eval_dir ./outputs/eval
+python src/eval/summarize_results.py --eval_dir ./outputs/eval
 ```
 
 ## 配置说明
@@ -286,8 +282,6 @@ training:
 - `none`
 
 使用前请自行在环境变量中配置对应平台的认证信息，不要把 API Key 写进代码。
-
-SwanLab 一般不需要你先在网页手动创建项目。训练开始后，`swanlab.init(...)` 会按配置中的 `project.name` 自动在你的空间下创建项目和实验记录。
 
 ## 结果文件
 

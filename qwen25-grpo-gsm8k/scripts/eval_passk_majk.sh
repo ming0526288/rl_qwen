@@ -25,12 +25,12 @@ fi
 for K in ${K_VALUES}; do
   OUTPUT_FILE="${EVAL_DIR}/${MODE}_passk_majk_k${K}.json"
   if [[ "${MODE}" == "baseline" ]]; then
-    python -m src.eval.eval_passk_majk \
+    uv run --active python -m src.eval.eval_passk_majk \
       --config "${CONFIG_PATH}" \
       --output_file "${OUTPUT_FILE}" \
       --k "${K}"
   elif [[ "${MODE}" == "grpo" ]]; then
-    python -m src.eval.eval_passk_majk \
+    uv run --active python -m src.eval.eval_passk_majk \
       --config "${CONFIG_PATH}" \
       --adapter_path "${ADAPTER_PATH}" \
       --output_file "${OUTPUT_FILE}" \

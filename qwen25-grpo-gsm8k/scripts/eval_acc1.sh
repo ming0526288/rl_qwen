@@ -13,7 +13,7 @@ EVAL_DIR="./outputs/eval"
 mkdir -p "${EVAL_DIR}"
 
 if [[ "${MODE}" == "baseline" ]]; then
-  python -m src.eval.eval_acc1 \
+  uv run --active python -m src.eval.eval_acc1 \
     --config "${CONFIG_PATH}" \
     --output_file "${EVAL_DIR}/baseline_acc1.jsonl"
 elif [[ "${MODE}" == "grpo" ]]; then
@@ -24,7 +24,7 @@ elif [[ "${MODE}" == "grpo" ]]; then
     echo "No GRPO checkpoint found. Pass adapter path explicitly as the third argument." >&2
     exit 1
   fi
-  python -m src.eval.eval_acc1 \
+  uv run --active python -m src.eval.eval_acc1 \
     --config "${CONFIG_PATH}" \
     --adapter_path "${ADAPTER_PATH}" \
     --output_file "${EVAL_DIR}/grpo_acc1.jsonl"

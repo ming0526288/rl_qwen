@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
-import math
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -79,6 +79,7 @@ class RewardFunction:
         self.tokenizer = tokenizer
         self.reward_cfg = reward_cfg
         self.accumulator = RewardAccumulator()
+        self.__name__ = "gsm8k_rule_reward"
 
     def __call__(
         self,
@@ -174,12 +175,13 @@ def load_model_and_tokenizer(model_path: Path, bf16: bool) -> tuple[Any, AutoTok
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"
 
-    torch_dtype = torch.bfloat16 if bf16 and torch.cuda.is_available() else torch.float16
+    dtype = torch.bfloat16 if bf16 and torch.cuda.is_available() else torch.float16
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         trust_remote_code=True,
-        torch_dtype=torch_dtype,
+        dtype=dtype,
         device_map="auto",
     )
     return model, tokenizer
@@ -201,10 +203,10 @@ def copy_config_snapshot(config_path: str, output_dir: Path) -> None:
     shutil.copy2(config_path, output_dir / Path(config_path).name)
 
 
-def build_training_args(config: dict[str, Any], output_dir: Path) -> Any:
+def build_training_args(config: dict[str, Any], output_dir: Path, logger: Any) -> Any:
     GRPOConfig, _ = import_grpo_components()
     training_cfg = config["training"]
-    kwargs = dict(
+    raw_kwargs = dict(
         output_dir=str(output_dir),
         bf16=bool(training_cfg["bf16"]),
         gradient_checkpointing=bool(training_cfg["gradient_checkpointing"]),
@@ -214,7 +216,6 @@ def build_training_args(config: dict[str, Any], output_dir: Path) -> Any:
         max_steps=int(training_cfg["max_steps"]),
         logging_steps=int(training_cfg["logging_steps"]),
         save_steps=int(training_cfg["save_steps"]),
-        eval_steps=int(training_cfg["eval_steps"]),
         max_prompt_length=int(training_cfg["max_prompt_length"]),
         max_completion_length=int(training_cfg["max_completion_length"]),
         num_generations=int(training_cfg["num_generations"]),
@@ -224,15 +225,28 @@ def build_training_args(config: dict[str, Any], output_dir: Path) -> Any:
         remove_unused_columns=False,
         log_on_each_node=False,
         report_to="none",
+        run_name="grpo-train",
     )
+    if int(training_cfg.get("eval_steps", 0)) > 0:
+        raw_kwargs["eval_strategy"] = "no"
     if "epsilon" in training_cfg:
-        kwargs["epsilon"] = float(training_cfg["epsilon"])
+        raw_kwargs["epsilon"] = float(training_cfg["epsilon"])
+
+    signature = inspect.signature(GRPOConfig.__init__)
+    supported_keys = set(signature.parameters.keys())
+    filtered_kwargs = {key: value for key, value in raw_kwargs.items() if key in supported_keys}
+    dropped_keys = sorted(set(raw_kwargs.keys()) - set(filtered_kwargs.keys()))
+    if dropped_keys:
+        logger.warning(
+            "Current TRL GRPOConfig does not support these config fields and they will be ignored: %s",
+            ", ".join(dropped_keys),
+        )
     try:
-        return GRPOConfig(**kwargs)
+        return GRPOConfig(**filtered_kwargs)
     except TypeError as exc:
         raise RuntimeError(
-            "Failed to initialize GRPOConfig. The installed TRL version likely uses a different GRPO API. "
-            "Please upgrade TRL to a version that includes GRPOConfig/GRPOTrainer with max_completion_length and num_generations support."
+            "Failed to initialize GRPOConfig after filtering unsupported arguments. "
+            "Please check your installed TRL version and compare it with the project config."
         ) from exc
 
 
@@ -263,54 +277,56 @@ def train(config_path: str) -> None:
     )
     callback = MetricsCallback(reward_fn=reward_fn, metric_logger=metric_logger)
 
-    training_args = build_training_args(config, output_dir)
-    _, GRPOTrainer = import_grpo_components()
-
-    trainer_kwargs = {
-        "model": model,
-        "reward_funcs": reward_fn,
-        "args": training_args,
-        "train_dataset": train_dataset,
-        "callbacks": [callback],
-    }
-    trainer_kwargs["processing_class"] = tokenizer
-    if bool(config["lora"]["enabled"]):
-        trainer_kwargs["peft_config"] = build_lora_config(config["lora"])
-
     try:
-        trainer = GRPOTrainer(**trainer_kwargs)
-    except TypeError as exc:
-        if "processing_class" in trainer_kwargs:
-            trainer_kwargs.pop("processing_class")
-            trainer_kwargs["tokenizer"] = tokenizer
-            try:
-                trainer = GRPOTrainer(**trainer_kwargs)
-            except TypeError as nested_exc:
+        training_args = build_training_args(config, output_dir, logger)
+        _, GRPOTrainer = import_grpo_components()
+
+        trainer_kwargs = {
+            "model": model,
+            "reward_funcs": reward_fn,
+            "args": training_args,
+            "train_dataset": train_dataset,
+            "callbacks": [callback],
+        }
+        trainer_kwargs["processing_class"] = tokenizer
+        if bool(config["lora"]["enabled"]):
+            trainer_kwargs["peft_config"] = build_lora_config(config["lora"])
+
+        try:
+            trainer = GRPOTrainer(**trainer_kwargs)
+        except TypeError as exc:
+            if "processing_class" in trainer_kwargs:
+                trainer_kwargs.pop("processing_class")
+                trainer_kwargs["tokenizer"] = tokenizer
+                try:
+                    trainer = GRPOTrainer(**trainer_kwargs)
+                except TypeError as nested_exc:
+                    raise RuntimeError(
+                        "The installed TRL version exposes a different GRPOTrainer signature. "
+                        "Please check the README compatibility note and upgrade TRL."
+                    ) from nested_exc
+            else:
                 raise RuntimeError(
                     "The installed TRL version exposes a different GRPOTrainer signature. "
                     "Please check the README compatibility note and upgrade TRL."
-                ) from nested_exc
-        else:
-            raise RuntimeError(
-                "The installed TRL version exposes a different GRPOTrainer signature. "
-                "Please check the README compatibility note and upgrade TRL."
-            ) from exc
+                ) from exc
 
-    logger.info("Starting GRPO training with %d samples", len(train_dataset))
-    train_result = trainer.train()
-    trainer.save_model()
-    trainer.save_state()
-    metric_logger.finish()
+        logger.info("Starting GRPO training with %d samples", len(train_dataset))
+        train_result = trainer.train()
+        trainer.save_model()
+        trainer.save_state()
 
-    summary = {
-        "global_step": int(getattr(trainer.state, "global_step", 0)),
-        "train_loss": float(train_result.training_loss),
-        "reward_mean": reward_fn.accumulator.reward_mean,
-        "reward_std": reward_fn.accumulator.reward_std,
-    }
-    with (output_dir / "train_summary.json").open("w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2, ensure_ascii=False)
-    logger.info("Training complete. Summary saved to %s", output_dir / "train_summary.json")
+        summary = {
+            "global_step": int(getattr(trainer.state, "global_step", 0)),
+            "train_loss": float(train_result.training_loss),
+            "reward_mean": reward_fn.accumulator.reward_mean,
+            "reward_std": reward_fn.accumulator.reward_std,
+        }
+        with (output_dir / "train_summary.json").open("w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=2, ensure_ascii=False)
+        logger.info("Training complete. Summary saved to %s", output_dir / "train_summary.json")
+    finally:
+        metric_logger.finish()
 
 
 def parse_args() -> argparse.Namespace:
