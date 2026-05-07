@@ -128,9 +128,10 @@ class RewardFunction:
 
 
 class MetricsCallback(TrainerCallback):
-    def __init__(self, reward_fn: RewardFunction, metric_logger: MetricLogger) -> None:
+    def __init__(self, reward_fn: RewardFunction, metric_logger: MetricLogger, logger: Any) -> None:
         self.reward_fn = reward_fn
         self.metric_logger = metric_logger
+        self.logger = logger
         self.step_timer = StepTimer()
 
     def on_log(self, args, state, control, logs=None, **kwargs):  # type: ignore[override]
@@ -147,23 +148,51 @@ class MetricsCallback(TrainerCallback):
             "train/tokens_per_second": token_count / max(step_time, 1e-6),
         }
 
+        reward_mean = logs.get("rewards/gsm8k_rule_reward/mean", reward_logs["train/reward_mean"])
+        reward_std = logs.get("rewards/gsm8k_rule_reward/std", reward_logs["train/reward_std"])
+        completion_length = logs.get("completions/mean_length", reward_logs["train/completion_length"])
         kl_value = logs.get("kl", logs.get("objective/kl", 0.0))
         entropy_value = logs.get("entropy", logs.get("objective/entropy", 0.0))
-        clip_ratio = logs.get("clip_ratio", logs.get("policy/clipfrac_avg", 0.0))
+        clip_ratio = logs.get(
+            "clip_ratio",
+            logs.get("policy/clipfrac_avg", logs.get("clip_ratio/region_mean", 0.0)),
+        )
 
         merged = {
             "train/loss": float(logs.get("loss", 0.0)),
             "train/learning_rate": float(logs.get("learning_rate", 0.0)),
             "train/grad_norm": float(logs.get("grad_norm", 0.0)),
             "train/global_step": float(state.global_step),
+            "train/reward_mean": float(reward_mean or 0.0),
+            "train/reward_std": float(reward_std or 0.0),
+            "train/correct_rate": float(reward_logs["train/correct_rate"]),
+            "train/format_rate": float(reward_logs["train/format_rate"]),
+            "train/completion_length": float(completion_length or 0.0),
+            "train/reward_answer": float(reward_logs["train/reward_answer"]),
+            "train/reward_format": float(reward_logs["train/reward_format"]),
+            "train/reward_length_penalty": float(reward_logs["train/reward_length_penalty"]),
             "train/kl": float(kl_value or 0.0),
             "train/entropy": float(entropy_value or 0.0),
             "train/clip_ratio": float(clip_ratio or 0.0),
-            **reward_logs,
             **perf_logs,
             **get_gpu_metrics(),
         }
         self.metric_logger.log(merged, step=state.global_step)
+        self.logger.info(
+            "Custom train metrics | step=%s reward_mean=%.4f reward_std=%.4f correct_rate=%.4f "
+            "format_rate=%.4f completion_length=%.2f reward_answer=%.4f reward_format=%.4f "
+            "reward_length_penalty=%.4f clip_ratio=%.4f",
+            int(state.global_step),
+            merged["train/reward_mean"],
+            merged["train/reward_std"],
+            merged["train/correct_rate"],
+            merged["train/format_rate"],
+            merged["train/completion_length"],
+            merged["train/reward_answer"],
+            merged["train/reward_format"],
+            merged["train/reward_length_penalty"],
+            merged["train/clip_ratio"],
+        )
 
 
 def load_model_and_tokenizer(model_path: Path, bf16: bool) -> tuple[Any, AutoTokenizer]:
@@ -274,8 +303,9 @@ def train(config_path: str, resume_from_checkpoint: str | None = None) -> None:
         backend=str(config["training"].get("report_to", "none")),
         project=str(config["project"]["name"]),
         run_name="grpo-train",
+        local_metrics_path=paths["log_dir"] / "train_metrics.jsonl",
     )
-    callback = MetricsCallback(reward_fn=reward_fn, metric_logger=metric_logger)
+    callback = MetricsCallback(reward_fn=reward_fn, metric_logger=metric_logger, logger=logger)
 
     try:
         training_args = build_training_args(config, output_dir, logger)
