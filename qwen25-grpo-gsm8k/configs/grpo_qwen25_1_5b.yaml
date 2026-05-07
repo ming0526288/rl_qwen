@@ -1,0 +1,63 @@
+project:
+  name: qwen25-grpo-gsm8k
+  seed: 42
+
+paths:
+  model_name: Qwen/Qwen2.5-1.5B-Instruct
+  model_dir: ./models/Qwen2.5-1.5B-Instruct
+  dataset_dir: ./datasets/gsm8k
+  train_file: ./datasets/gsm8k/train.jsonl
+  test_file: ./datasets/gsm8k/test.jsonl
+  test_200_file: ./datasets/gsm8k/test_200.jsonl
+  output_dir: ./outputs/qwen25_1_5b_grpo_gsm8k
+  log_dir: ./logs
+  eval_dir: ./outputs/eval
+
+training:
+  bf16: true
+  gradient_checkpointing: true
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 8
+  learning_rate: 1.0e-6
+  max_steps: 1000
+  logging_steps: 5
+  save_steps: 200
+  eval_steps: 200
+  max_prompt_length: 512
+  max_completion_length: 512
+  num_generations: 4
+  temperature: 0.7
+  top_p: 0.95
+  beta: 0.04
+  epsilon: 0.2
+  report_to: swanlab
+
+lora:
+  enabled: true
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+reward:
+  answer_correct: 1.0
+  format_correct: 0.2
+  overlong_512: -0.1
+  overlong_768: -0.2
+
+eval:
+  max_new_tokens: 512
+  acc1_do_sample: false
+  passk_do_sample: true
+  passk_values:
+    - 4
+    - 8
+  temperature: 0.7
+  top_p: 0.95

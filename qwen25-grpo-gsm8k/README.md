@@ -1,0 +1,355 @@
+# qwen25-grpo-gsm8k
+
+一个完整、可运行、可上传 GitHub 的轻量复现项目，用于在 `Qwen/Qwen2.5-1.5B-Instruct` 上进行 `GRPO` 数学推理后训练，并在 `GSM8K` 上比较训练前后的表现。
+
+## 项目简介
+
+本项目聚焦第一版最小闭环：
+
+`Qwen2.5-1.5B-Instruct -> GRPO -> GSM8K test`
+
+目标是复现一条接近 DeepSeekMath 轻量实验思路的训练链路：从指令模型出发，使用 rule-based verifier 奖励进行 GRPO 后训练，再对 baseline 与 GRPO checkpoint 做统一评测。
+
+GitHub 仓库只保存代码、配置和说明，不保存模型权重、数据集和训练输出。
+
+## 实验目标
+
+1. 基于 `Qwen/Qwen2.5-1.5B-Instruct` 在 `openai/gsm8k` 的 `train` split 上进行 GRPO 训练。
+2. 在 `openai/gsm8k` 的 `test` split 上评测 baseline 与训练后模型。
+3. 输出 `Acc@1`、`Pass@K`、`Maj@K`、格式通过率、平均 reward、平均长度等指标。
+4. 支持 `SwanLab` 或 `Weights & Biases` 记录训练日志。
+
+## 方法流程
+
+1. 下载模型到 `./models/Qwen2.5-1.5B-Instruct`
+2. 下载并处理 GSM8K 到 `./datasets/gsm8k`
+3. 使用 LoRA + GRPO 训练
+4. 在 GSM8K test 上分别评测 baseline 与 GRPO
+5. 汇总结果为 Markdown / CSV 表格
+
+## 项目结构
+
+```text
+qwen25-grpo-gsm8k/
+├── README.md
+├── pyproject.toml
+├── .gitignore
+├── configs/
+│   └── grpo_qwen25_1_5b.yaml
+├── models/
+│   └── .gitkeep
+├── datasets/
+│   └── .gitkeep
+├── outputs/
+│   └── .gitkeep
+├── logs/
+│   └── .gitkeep
+├── src/
+│   ├── data/
+│   ├── rewards/
+│   ├── train/
+│   ├── eval/
+│   └── utils/
+└── scripts/
+```
+
+## 数据说明
+
+- `train`: `openai/gsm8k`, config=`main`, split=`train`
+- `eval`: `openai/gsm8k`, config=`main`, split=`test`
+- `test` 不参与训练
+
+处理后保存为：
+
+- `./datasets/gsm8k/train.jsonl`
+- `./datasets/gsm8k/test.jsonl`
+- `./datasets/gsm8k/test_200.jsonl`
+
+统一样本格式：
+
+```json
+{
+  "id": "train-0",
+  "question": "...",
+  "answer": "原始 answer 字段",
+  "ground_truth": "72",
+  "prompt": "统一 prompt 模板"
+}
+```
+
+统一 prompt 模板：
+
+```text
+请解答下面的数学题。你可以给出必要的推理过程，但最后必须严格使用如下格式输出最终答案：
+
+Answer: <数字>
+
+题目：
+{question}
+```
+
+## 奖励函数说明
+
+本项目的“奖励模型”不是神经网络 reward model，而是 GSM8K 标准答案驱动的 rule-based reward/verifier。
+
+不训练 reward model。
+
+奖励由三部分构成：
+
+1. `answer reward`
+   正确答案 `+1.0`，否则 `0.0`
+2. `format reward`
+   输出中存在合法 `Answer: <数字>` 格式则 `+0.2`
+3. `length penalty`
+   completion token 数大于 `512` 时 `-0.1`
+   completion token 数大于 `768` 时 `-0.2`
+
+总奖励：
+
+```text
+reward = answer_reward + format_reward + length_penalty
+```
+
+## 训练指标解释
+
+- `train/loss`: 训练损失
+- `train/learning_rate`: 当前学习率
+- `train/grad_norm`: 梯度范数
+- `train/global_step`: 全局步数
+- `train/reward_mean`: 平均奖励
+- `train/reward_std`: 同组回答之间的奖励标准差
+- `train/kl`: policy 相对 reference model 的偏移程度
+- `train/entropy`: 输出分布熵，过快下降可能表示塌缩
+- `train/clip_ratio`: 裁剪比例，过高通常意味着更新过猛
+- `train/completion_length`: 平均输出长度
+- `train/correct_rate`: 一组候选回答中的正确比例
+- `train/format_rate`: 符合 `Answer: <数字>` 格式的比例
+- `train/reward_answer`: 答案正确奖励均值
+- `train/reward_format`: 格式奖励均值
+- `train/reward_length_penalty`: 长度惩罚均值
+- `system/gpu_memory_allocated`: 已分配显存
+- `system/gpu_memory_reserved`: 已保留显存
+- `train/step_time`: 单步耗时
+- `train/samples_per_second`: 每秒样本数
+- `train/tokens_per_second`: 每秒 token 数
+
+## 评测指标解释
+
+- `Acc@1`: 贪心解码下一次作答的准确率
+- `Pass@K`: K 次采样中至少一个正确
+- `Maj@K`: K 次采样后，多数投票答案是否正确
+- `Format Pass Rate`: 输出格式通过率
+- `Avg Reward`: 平均 reward
+- `Avg Length`: 平均生成长度
+- `Overlong Rate`: 生成长度超过 512 的比例
+- `Invalid Answer Rate`: 无法提取最终答案的比例
+- `Avg Correct Count`: 每题 K 次采样中平均正确次数
+- `Avg Unique Answer Count`: 每题 K 次采样中不同最终答案数
+
+## 环境与依赖
+
+- Python `>=3.11,<3.13`
+- 建议使用支持 CUDA 的 PyTorch
+- `trl` 需要包含 `GRPOTrainer`
+
+安装依赖：
+
+```bash
+uv sync
+```
+
+或：
+
+```bash
+pip install -e .
+```
+
+## 运行命令
+
+1. 下载模型
+
+```bash
+python scripts/download_model.py --config configs/grpo_qwen25_1_5b.yaml
+```
+
+2. 下载并处理数据集
+
+```bash
+python scripts/download_dataset.py --config configs/grpo_qwen25_1_5b.yaml
+```
+
+3. 训练 GRPO
+
+```bash
+bash scripts/train_grpo.sh
+```
+
+4. 评测 baseline
+
+```bash
+bash scripts/eval_acc1.sh baseline
+```
+
+5. 评测 GRPO
+
+```bash
+bash scripts/eval_acc1.sh grpo
+```
+
+如果需要显式指定 checkpoint：
+
+```bash
+bash scripts/eval_acc1.sh grpo configs/grpo_qwen25_1_5b.yaml ./outputs/qwen25_1_5b_grpo_gsm8k/checkpoint-1000
+```
+
+6. 计算 Pass@K / Maj@K
+
+```bash
+bash scripts/eval_passk_majk.sh baseline
+bash scripts/eval_passk_majk.sh grpo
+```
+
+7. 汇总结果
+
+```bash
+python src/eval/summarize_results.py --eval_dir ./outputs/eval
+```
+
+## 配置说明
+
+核心配置文件：
+
+`configs/grpo_qwen25_1_5b.yaml`
+
+默认路径全部为相对路径：
+
+- 模型路径：`./models/Qwen2.5-1.5B-Instruct`
+- 数据路径：`./datasets/gsm8k`
+- 训练输出：`./outputs/qwen25_1_5b_grpo_gsm8k`
+- 日志目录：`./logs`
+- 评测目录：`./outputs/eval`
+
+## 4090 24GB 显存建议
+
+默认配置优先保证能在 4090 24GB 上尝试跑通，但 GRPO 采样训练仍然比较吃显存。
+
+如果显存紧张，建议按顺序降配：
+
+1. `num_generations: 4 -> 2`
+2. `max_completion_length: 512 -> 256`
+3. 增大 `gradient_accumulation_steps`
+4. 切换到 4bit QLoRA
+
+## 日志后端
+
+配置项：
+
+```yaml
+training:
+  report_to: swanlab
+```
+
+可选值：
+
+- `swanlab`
+- `wandb`
+- `none`
+
+使用前请自行在环境变量中配置对应平台的认证信息，不要把 API Key 写进代码。
+
+## 结果文件
+
+训练完成后：
+
+- checkpoint 保存在 `./outputs/qwen25_1_5b_grpo_gsm8k`
+- 训练摘要保存在 `train_summary.json`
+
+评测完成后：
+
+- `./outputs/eval/baseline_acc1.jsonl`
+- `./outputs/eval/baseline_acc1.summary.json`
+- `./outputs/eval/grpo_acc1.jsonl`
+- `./outputs/eval/grpo_acc1.summary.json`
+- `./outputs/eval/baseline_passk_majk_k4.json`
+- `./outputs/eval/grpo_passk_majk_k4.json`
+- `./outputs/eval/results_summary.md`
+- `./outputs/eval/results_summary.csv`
+
+## 常见问题
+
+### OOM 怎么办
+
+- 把 `num_generations` 从 `4` 降到 `2`
+- 把 `max_completion_length` 从 `512` 降到 `256`
+- 增大 `gradient_accumulation_steps`
+- 打开更激进的量化方案，例如 4bit QLoRA
+
+### reward 上升但 Acc 不升怎么办
+
+- 检查 `train/format_rate` 是否在升而 `train/correct_rate` 没升
+- 检查奖励是否更多奖励了格式而非正确性
+- 看 `Pass@K` 是否提升但 `Acc@1` 不明显，说明采样质量提升了但贪心答案还没稳定
+
+### KL 爆炸怎么办
+
+- 降低学习率
+- 降低 `beta`
+- 缩短 `max_completion_length`
+- 检查 reward 是否过于稀疏或过度鼓励某类模板
+
+### entropy 下降太快怎么办
+
+- 提高采样温度
+- 检查 `num_generations` 是否太小
+- 降低学习率，避免策略过早收缩
+
+### completion length 变长怎么办
+
+- 检查 `train/completion_length`
+- 提高长度惩罚的强度
+- 适当收紧 `max_completion_length`
+- 检查 prompt 是否诱导过长推理
+
+## Git 上传说明
+
+`.gitignore` 已忽略以下内容：
+
+- `models/*`
+- `datasets/*`
+- `outputs/*`
+- `logs/*`
+- `*.safetensors`
+- `*.bin`
+- `*.pt`
+- `*.pth`
+- `*.ckpt`
+- `wandb/`
+- `swanlog/`
+- `__pycache__/`
+- `.cache/`
+
+同时保留：
+
+- `models/.gitkeep`
+- `datasets/.gitkeep`
+- `outputs/.gitkeep`
+- `logs/.gitkeep`
+
+这意味着你可以直接把仓库上传到 GitHub，而不会把模型权重、数据集和训练产物提交上去。
+
+## 说明与边界
+
+第一版不包含以下内容：
+
+- DPO
+- PPO
+- DAPO
+- 神经 reward model
+- 多机多卡
+- vLLM 推理加速
+- 领域专用数据
+- Web 前端
+
+第一版只做：
+
+`Qwen2.5-1.5B-Instruct -> GRPO -> GSM8K 评测`

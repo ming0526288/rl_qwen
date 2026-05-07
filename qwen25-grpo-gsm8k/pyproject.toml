@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qwen25-grpo-gsm8k"
+version = "0.1.0"
+description = "Lightweight GRPO post-training and evaluation pipeline for Qwen2.5-1.5B-Instruct on GSM8K."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "torch",
+  "transformers",
+  "datasets",
+  "accelerate",
+  "peft",
+  "trl",
+  "safetensors",
+  "sentencepiece",
+  "protobuf",
+  "swanlab",
+  "wandb",
+  "pyyaml",
+  "tqdm",
+  "numpy",
+  "pandas",
+  "huggingface_hub",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "ruff",
+]
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
