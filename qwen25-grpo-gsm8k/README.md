@@ -214,6 +214,20 @@ uv run --active python scripts/download_dataset.py --config configs/grpo_qwen25_
 bash scripts/train_grpo.sh
 ```
 
+如果需要从 checkpoint 继续训练：
+
+```bash
+bash scripts/train_grpo.sh configs/grpo_qwen25_1_5b.yaml ./outputs/qwen25_1_5b_grpo_gsm8k/checkpoint-500
+```
+
+也可以直接调用 Python 主程序：
+
+```bash
+uv run --active python -m src.train.train_grpo \
+  --config configs/grpo_qwen25_1_5b.yaml \
+  --resume_from_checkpoint ./outputs/qwen25_1_5b_grpo_gsm8k/checkpoint-500
+```
+
 5. 评测 baseline
 
 ```bash

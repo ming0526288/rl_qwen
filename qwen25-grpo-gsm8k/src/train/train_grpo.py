@@ -250,7 +250,7 @@ def build_training_args(config: dict[str, Any], output_dir: Path, logger: Any) -
         ) from exc
 
 
-def train(config_path: str) -> None:
+def train(config_path: str, resume_from_checkpoint: str | None = None) -> None:
     config = load_yaml_config(config_path)
     paths = resolve_paths(config, config_path)
     logger = setup_logger("train_grpo", paths["log_dir"])
@@ -312,7 +312,14 @@ def train(config_path: str) -> None:
                 ) from exc
 
         logger.info("Starting GRPO training with %d samples", len(train_dataset))
-        train_result = trainer.train()
+        if resume_from_checkpoint is not None:
+            checkpoint_path = Path(resume_from_checkpoint)
+            if not checkpoint_path.exists():
+                raise FileNotFoundError(f"Resume checkpoint not found: {checkpoint_path}")
+            logger.info("Resuming training from checkpoint: %s", checkpoint_path)
+            train_result = trainer.train(resume_from_checkpoint=str(checkpoint_path))
+        else:
+            train_result = trainer.train()
         trainer.save_model()
         trainer.save_state()
 
@@ -332,12 +339,17 @@ def train(config_path: str) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run LoRA + GRPO training on GSM8K.")
     parser.add_argument("--config", required=True, help="Path to YAML config file.")
+    parser.add_argument(
+        "--resume_from_checkpoint",
+        default=None,
+        help="Optional checkpoint path for resuming interrupted training.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    train(args.config)
+    train(args.config, args.resume_from_checkpoint)
 
 
 if __name__ == "__main__":
