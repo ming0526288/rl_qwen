@@ -38,6 +38,7 @@ def load_model(model_path: Path, adapter_path: Path | None = None) -> tuple[Any,
         if not adapter_path.exists():
             raise FileNotFoundError(f"Adapter path not found: {adapter_path}")
         model = PeftModel.from_pretrained(model, adapter_path)
+        model = model.merge_and_unload()
     model.eval()
     return model, tokenizer
 
