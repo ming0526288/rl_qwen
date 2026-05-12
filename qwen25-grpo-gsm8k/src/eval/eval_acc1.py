@@ -26,6 +26,7 @@ def load_model(model_path: Path, adapter_path: Path | None = None) -> tuple[Any,
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
@@ -41,8 +42,13 @@ def load_model(model_path: Path, adapter_path: Path | None = None) -> tuple[Any,
     return model, tokenizer
 
 
-def generate_text(model: Any, tokenizer: Any, prompt: str, max_new_tokens: int) -> tuple[str, int]:
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+def generate_text_batch(
+    model: Any,
+    tokenizer: Any,
+    prompts: list[str],
+    max_new_tokens: int,
+) -> list[tuple[str, int]]:
+    inputs = tokenizer(prompts, return_tensors="pt", padding=True).to(model.device)
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
@@ -52,9 +58,11 @@ def generate_text(model: Any, tokenizer: Any, prompt: str, max_new_tokens: int) 
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
         )
-    generated = outputs[0][inputs["input_ids"].shape[-1] :]
-    text = tokenizer.decode(generated, skip_special_tokens=True)
-    return text, int(generated.shape[-1])
+    generated = outputs[:, inputs["input_ids"].shape[-1] :]
+    texts = tokenizer.batch_decode(generated, skip_special_tokens=True)
+    pad_token_id = tokenizer.pad_token_id
+    lengths = generated.ne(pad_token_id).sum(dim=1).tolist()
+    return [(text, int(length)) for text, length in zip(texts, lengths, strict=False)]
 
 
 def evaluate(
@@ -64,6 +72,7 @@ def evaluate(
     output_file: str,
     reward_cfg: dict[str, float],
     max_new_tokens: int,
+    batch_size: int,
 ) -> dict[str, float]:
     logger = setup_logger("eval_acc1")
     model, tokenizer = load_model(Path(model_path), Path(adapter_path) if adapter_path else None)
@@ -72,34 +81,36 @@ def evaluate(
     ensure_dir(output_path.parent)
 
     results = []
-    for example in tqdm(examples, desc="Evaluating Acc@1"):
-        model_output, completion_length = generate_text(
+    for start in tqdm(range(0, len(examples), batch_size), desc="Evaluating Acc@1"):
+        batch_examples = examples[start : start + batch_size]
+        batch_outputs = generate_text_batch(
             model=model,
             tokenizer=tokenizer,
-            prompt=example["prompt"],
+            prompts=[example["prompt"] for example in batch_examples],
             max_new_tokens=max_new_tokens,
         )
-        reward = compute_gsm8k_reward(
-            completion_text=model_output,
-            ground_truth=example["ground_truth"],
-            completion_length=completion_length,
-            answer_correct=float(reward_cfg["answer_correct"]),
-            format_correct=float(reward_cfg["format_correct"]),
-            overlong_512=float(reward_cfg["overlong_512"]),
-            overlong_768=float(reward_cfg["overlong_768"]),
-        )
-        record = {
-            "id": example["id"],
-            "question": example["question"],
-            "ground_truth": example["ground_truth"],
-            "model_output": model_output,
-            "extracted_answer": reward.extracted_answer,
-            "correct": reward.correct,
-            "format_ok": reward.format_ok,
-            "completion_length": completion_length,
-            "reward": reward.reward,
-        }
-        results.append(record)
+        for example, (model_output, completion_length) in zip(batch_examples, batch_outputs, strict=False):
+            reward = compute_gsm8k_reward(
+                completion_text=model_output,
+                ground_truth=example["ground_truth"],
+                completion_length=completion_length,
+                answer_correct=float(reward_cfg["answer_correct"]),
+                format_correct=float(reward_cfg["format_correct"]),
+                overlong_512=float(reward_cfg["overlong_512"]),
+                overlong_768=float(reward_cfg["overlong_768"]),
+            )
+            record = {
+                "id": example["id"],
+                "question": example["question"],
+                "ground_truth": example["ground_truth"],
+                "model_output": model_output,
+                "extracted_answer": reward.extracted_answer,
+                "correct": reward.correct,
+                "format_ok": reward.format_ok,
+                "completion_length": completion_length,
+                "reward": reward.reward,
+            }
+            results.append(record)
 
     with output_path.open("w", encoding="utf-8") as f:
         for record in results:
@@ -139,6 +150,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--adapter_path", default=None, help="Optional LoRA adapter path.")
     parser.add_argument("--test_file", default=None, help="Path to test jsonl.")
     parser.add_argument("--output_file", default=None, help="Path to save per-sample results.")
+    parser.add_argument("--batch_size", type=int, default=None, help="Number of prompts to evaluate per batch.")
     return parser.parse_args()
 
 
@@ -154,6 +166,7 @@ def main() -> None:
         output_file=output_file,
         reward_cfg=config["reward"],
         max_new_tokens=int(config["eval"]["max_new_tokens"]),
+        batch_size=int(args.batch_size or config["eval"].get("batch_size", 8)),
     )
 
 

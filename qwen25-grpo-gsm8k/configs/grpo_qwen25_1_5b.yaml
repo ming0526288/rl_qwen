@@ -56,6 +56,7 @@ reward:
 
 eval:
   max_new_tokens: 256
+  batch_size: 8
   acc1_do_sample: false
   passk_do_sample: true
   passk_values:
